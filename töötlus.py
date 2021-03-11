@@ -1,10 +1,8 @@
 import pandas as pd
-import numpy as np
 import pyranges as pr
-from collections import defaultdict
 import numpy as np
 import matplotlib.pyplot as plt
-
+import collections
 
 pd.set_option('display.max_columns', None)
 desired_width = 1000
@@ -12,93 +10,104 @@ pd.set_option('display.width', desired_width)
 pd.set_option('display.max_colwidth', 100)
 np.set_printoptions(linewidth=desired_width)
 
-
 '''
 Failist andmete sisselugemine, veergude lisamine ja kustutamine.
 Sisend: failinimi
-Väljund: tabel sobilike veergudega
+Väljund: tabel sobilike veergudega Pyranges ja muu töötluse jaoks
 '''
 def algtöötlus(failinimi):
-    tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + failinimi, sep="	")
-    tabel['full_pos'] = tabel['chr'].astype(str) + "-" + tabel['pos'].astype(str) # uus veerg koos kromosoomi ja asukohaga
-    tabel = tabel[['phenotype_id', 'chr', 'full_pos', 'cs_id', 'pip', 'cs_size']]  # mis veerud jätta alles
+    tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + failinimi, sep="	")  # loeb faili sisse
+    tabel = tabel[['phenotype_id', 'chr', 'cs_id', 'pip', 'cs_size', 'variant_id']]  # mis veerud jätta alles
+    tabel = tabel.rename(columns={'chr': 'Chromosome'})
+    tabel = pd.concat([tabel, tabel["variant_id"].str.split("_", expand=True)[1].rename("Start")], axis=1)  # uus veerg Start
+    tabel["Start"] = pd.to_numeric(tabel["Start"])
+    tabel['End'] = tabel['Start'] + 1  # Pyranges puhul peab mingi vahemik olema, suurema vahemiku puhul loetakse liiga palju ülekatteid
+    tabel = tabel[['phenotype_id', 'cs_id', 'Chromosome', 'Start', 'End', 'pip', 'cs_size']]  # mis veerud jätta alles
+
     return tabel
 
 
 '''
 Tabelist sobilike credible set-ide välja valimine
 Sisend: tabel, credible set-i maksimaalne suurus, kas on txrev või ge fail
-Väljund: list credible set-idest, mis vastavad tingimustele
+Väljund: pyranges tabel, kus on iga geeni kohta 1 sobilik cs
 '''
 def cs_filtreerimine(tabel, cs_suurus, onSplaissimine):
     tabel_cs = tabel.copy()
     tabel_cs = tabel_cs[tabel_cs['cs_size'] < cs_suurus]  # credible set maksimaalne suurus
 
-    if (onSplaissimine): # vaid txrev puhul
+    if (onSplaissimine):  # vaid txrev puhul
         tabel_cs = tabel_cs[tabel_cs['phenotype_id'].str.contains("contained")]  # jätab alles vaid andmed splaissimise kohta
         tabel_cs['phenotype_id'] = tabel_cs['phenotype_id'].str.split(".", expand=True)  # jätab alles vaid geeni nime
 
-    # TODO: kas jätta nii, et järgmine rida jätab alles vaid ühe cs-i iga geeni kohta
-    tabel_cs = tabel_cs.sort_values('pip', ascending=False).drop_duplicates(['phenotype_id'])  # jätab iga geeni kohta vaid ühe CS-i alles, mille pip väärtus on kõige suurem
+    tabel_cs = tabel_cs.sort_values('pip', ascending=False).drop_duplicates(
+        ['phenotype_id'])  # jätab iga geeni kohta vaid ühe CS-i alles, mille pip väärtus on kõige suurem
 
-    cs_list = tabel_cs['cs_id'].tolist()  # sobilikud CS-id salvestab listi
+    # sobilikest cs-idest teeb Pyranges tabeli
+    tabel_dict = tabel_cs.to_dict()
+    cs_pr_tabel = pr.from_dict(tabel_dict)
 
-    #print("Enne duplikaatide eemaldamist", len(cs_list))
-    #cs_list = list(dict.fromkeys(cs_list)) #eemaldab duplikaadid
-    #print("Pärast duplikaatide eemaldamist", len(cs_list))
-    return cs_list
+    return cs_pr_tabel
 
 
 '''
-Tabelist ülekatete leidmine sõnastiku abil
-Sisend: tabel, cs_list
-Väljund: leitud ülekatted, 
+Tabelist ülekatete leidmine kasutades Pyranges count overlaps meetodit
+Sisend: tabel, cs_list, faili nime algus
+Väljund: leitud ülekatted
 '''
-def ülekatete_leidmine(tabel, cs_list):
-    print("Algne tabeli suurus:                    ", len(tabel))
-    tabel = tabel[tabel.cs_id.isin(cs_list)].copy()  # jätab alles vaid sellised veerud, milles cs_id on juba varem välja valitud
-    print("Tabeli suurus ainult sobilike cs-idega: ", len(tabel))
+def ülekatete_leidmine(tabel, cs_pr_tabel, nimi):
+    tabel_dict = tabel.to_dict()
+    pr_tabel = pr.from_dict(tabel_dict)  # teeb Pyranges tabeli
 
-    cs_pos_list = tabel['full_pos'].tolist()
-    asukoht_cs_sõnastik = defaultdict(list)
+    # loendab kogu tabeli ülekatteid varem välja filtreeritud sobilikest geenidest, salvestab tulemuse NumberOverlaps veergu
+    overlaps = pr_tabel.count_overlaps(cs_pr_tabel)
+    overlaps = overlaps[overlaps.NumberOverlaps > 0]  # jätab alles vaid vähemalt ühe ülekatte leidnud cs-i
+    ülekatteid = overlaps.NumberOverlaps.value_counts().to_dict()  # salvestab leitud ülekatete arvud sõnastikku
 
-    for i in range(len(tabel)):
-        if (tabel.iloc[i]['full_pos'] in cs_pos_list):
-            cs = tabel.iloc[i]['cs_id']
-            asukoht = tabel.iloc[i]['full_pos']
-            asukoht_cs_sõnastik[asukoht].append(cs) #TODO: mille põhjal eristada CS-i?, hetkel on kogu 'cs-id' informatsioon oluline (seega sama geeni kohta
+    # overlaps.rp()
+    # print(overlaps)
+    overlaps.to_csv(path=nimi + "_overlaps.csv")  # salvestab leitud vähemalt ühe ülekattega variandid faili
 
-    #print("dictionary_list", asukoht_cs_sõnastik)
+    return ülekatteid
 
-    ülekatteid_kokku = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-    #ülekatteid_kokku = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0} #mingitel tingimustel tuleb palju ülekatteid
-    #ülekatteid_kokku = defaultdict(int)
 
-    for i in asukoht_cs_sõnastik:
-        ülekatteid = len(asukoht_cs_sõnastik.get(i))
-        ülekatteid_kokku[ülekatteid] += 1
+'''
+Ülekatete sõnastike sama pikkuseks tegemine ja järjestamine, et oleks lihtsam joonist teha
+Sisend: ge ja txrev ülekatete sõnastikud
+Väljund: korrastatud ge ja txrev sõnastikud
+'''
+def ülekatete_korrastamine(ge_count, txrev_count):
+    suurim_pikkus = max(len(ge_count), len(txrev_count))
 
-    print("Ülekatted: ", ülekatteid_kokku)
+    for sõnastik in (ge_count, txrev_count):
+        while (len(sõnastik) < suurim_pikkus):
+            sõnastik[len(sõnastik) + 1] = 0
 
-    kokku_ridu = len(asukoht_cs_sõnastik)
-    return ülekatteid_kokku, kokku_ridu
+    ge_count = collections.OrderedDict(sorted(ge_count.items()))  # järjestab sõnastiku
+    txrev_count = collections.OrderedDict(sorted(txrev_count.items()))  # järjestab sõnastiku
 
-cs_suurus = 10
+    return ge_count, txrev_count
+
+
+cs_suurus = 10  # credible set suurus (kasutatakse filtreerimises), mis peab sellest jääma väiksemaks
+
 # geeniekspressioon
 print("\nGeeniekspressioon:")
+# ge_tabel = algtöötlus("ge.txt")
 ge_tabel = algtöötlus("HipSci.iPSC_ge.purity_filtered.txt")
-#ge_tabel = algtöötlus("ge.txt")
 ge_cs_list = cs_filtreerimine(ge_tabel, cs_suurus, False)
-ge_count, ge_summa = ülekatete_leidmine(ge_tabel, ge_cs_list)
+ge_count = ülekatete_leidmine(ge_tabel, ge_cs_list, 'ge')
+print("Geeniekspressiooniga leitud ülekatted: ", ge_count)
 
+# RNA splaissimine
 print("\nRNA splaissimine:")
 txrev_tabel = algtöötlus("HipSci.iPSC_txrev.purity_filtered.txt")
-#txrev_tabel = algtöötlus("txrev.txt")
+# txrev_tabel = algtöötlus("txrev.txt")
 txrev_cs_list = cs_filtreerimine(txrev_tabel, cs_suurus, True)
-txrev_count, txrev_summa = ülekatete_leidmine(txrev_tabel, txrev_cs_list)
+txrev_count = ülekatete_leidmine(txrev_tabel, txrev_cs_list, 'txrev')
+print("RNA splaissimisega leitud ülekatted: ", txrev_count)
 
-print("\nGeeniekspressiooniga leitud ülekatete arv: ", ge_summa)
-print("RNA splaissimisega leitud ülekatete arv: ", txrev_summa)
+ge_count, txrev_count = ülekatete_korrastamine(ge_count, txrev_count)
 
 
 def joonista(ge, txrev):
@@ -150,7 +159,7 @@ def joonista(ge, txrev):
     ax1.set_title('Tulemuste võrdlus 2+ ülekattega')
 
     # Add xticks on the middle of the group bars
-    ax1.set_xlabel('Ülekatted')
+    ax1.set_xlabel('Ülekatteid')
     ax1.set_ylabel('Geenide arv')
     ax1.set_xticks([r + (barWidth / 2) for r in range(len(bars1))])
     ax1.set_xticklabels(list(ge_count.keys()))
