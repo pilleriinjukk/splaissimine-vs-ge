@@ -4,6 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import collections
 from collections import defaultdict
+from os import path
+import igraph as ig
+
 
 pd.set_option('display.max_columns', None)
 desired_width = 1000
@@ -12,11 +15,10 @@ pd.set_option('display.max_colwidth', 100)
 np.set_printoptions(linewidth=desired_width)
 
 '''
-Failist andmete sisselugemine, veergude lisamine ja kustutamine.
+Failist andmete sisselugemine, veergude lisamine ja kustutamine ning kromosoomipõhiselt faili salvestamine.
 Sisend: failinimi
-Väljund: tabel sobilike veergudega Pyranges ja muu töötluse jaoks
 '''
-def algtöötlus(failinimi, tüüp = ""):
+def algtöötlus(failinimi, tüüp=""):
     tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + failinimi, sep="	")  # loeb faili sisse
     tabel = tabel[['phenotype_id', 'chr', 'cs_id', 'pip', 'cs_size', 'variant_id']]  # mis veerud jätta alles
     tabel = tabel.rename(columns={'chr': 'Chromosome'})
@@ -25,13 +27,29 @@ def algtöötlus(failinimi, tüüp = ""):
     tabel['End'] = tabel['Start'] + 1  # Pyranges puhul peab mingi vahemik olema, suurema vahemiku puhul loetakse liiga palju ülekatteid
     tabel = tabel[['phenotype_id', 'cs_id', 'Chromosome', 'Start', 'End', 'pip', 'cs_size']]  # mis veerud jätta alles
 
+    nimi = "ge"
     if (tüüp == "spalissimine"):  # vaid txrev puhul
         tabel = tabel[tabel['phenotype_id'].str.contains("contained")]  # jätab alles vaid andmed splaissimise kohta
+        nimi = "txrev"
 
     if (tüüp == "promootor"):  # vaid txrev puhul
         tabel = tabel[tabel['phenotype_id'].str.contains("upstream")]  # jätab alles vaid andmed splaissimise kohta
+        nimi = "txrev_up"
 
-    return tabel
+    tabel["cs_id"] = tabel["cs_id"] + "_" + failinimi.split(".purity_filtered.txt")[0] #lisame cs_id veerule andmebaasi nime juurde
+
+    #teeme igale kromosoomile oma tabeli
+    tabelid = list(range(22))
+
+    for i in range(22): #kirjutame iga kromosoomi oma faili
+        tabelid[i] = (tabel[(tabel['Chromosome'] == 1 + i)])
+        if path.exists(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + nimi + "_" + str(i + 1) + ".csv"):
+            tabelid[i].to_csv(
+                r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + nimi + "_" + str(i + 1) + ".csv", mode='a', index=False, header=False)
+
+        else:
+            tabelid[i].to_csv(
+                r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + nimi + "_" + str(i + 1) + ".csv", mode='a', index=False)  # esimene kord salvestame koos veerunimetustega
 
 
 '''
@@ -57,7 +75,7 @@ def cs_filtreerimine(tabel, cs_suurus, onSplaissimine):
     tabel_dict = tabel_cs.to_dict()
     cs_pr_tabel = pr.from_dict(tabel_dict)
 
-    return cs_pr_tabel
+    return cs_pr_tabel, tabel_cs
 
 
 '''
@@ -65,21 +83,28 @@ Tabelist ülekatete leidmine kasutades Pyranges count overlaps meetodit
 Sisend: tabel, cs_list, faili nime algus
 Väljund: leitud ülekatted
 '''
-def ülekatete_leidmine(tabel, cs_pr_tabel, nimi):
-    tabel_dict = tabel.to_dict()
-    pr_tabel = pr.from_dict(tabel_dict)  # teeb Pyranges tabeli
+def ülekatete_leidmine(tabel, cs_pr_tabel, nimi, tabel_cs):
+    pr_tabel = pr.PyRanges(tabel) # teeb Pyranges tabeli
 
     # loendab kogu tabeli ülekatteid varem välja filtreeritud sobilikest geenidest, salvestab tulemuse NumberOverlaps veergu
     overlaps = pr_tabel.count_overlaps(cs_pr_tabel)
+
+    overlaps = overlaps[overlaps.NumberOverlaps > 0]  # jätab alles vaid vähemalt ühe ülekatte leidnud cs-i
+
+    #vaatleme vaid üht kromosoomi korraga (nii overlaps kui ka chr puhul peaks vaid üks tabel olema
+    overlaps = overlaps.df
+    ühend = pd.merge(overlaps, tabel_cs, on=['cs_id', 'Start', 'pip'], how='left', indicator='exist')
+    ühend['exist'] = np.where(ühend.exist == 'both', True, False)
+
+    for i, row in ühend.iterrows():
+        if row.exist:
+            overlaps.iat[i, 7] -= 1
+
     overlaps = overlaps[overlaps.NumberOverlaps > 0]  # jätab alles vaid vähemalt ühe ülekatte leidnud cs-i
     ülekatteid = overlaps.NumberOverlaps.value_counts().to_dict()  # salvestab leitud ülekatete arvud sõnastikku
 
-    show_overlaps = pr_tabel.overlap(cs_pr_tabel)
+    #show_overlaps = pr_tabel.overlap(cs_pr_tabel)
     #show_overlaps.to_csv(path=nimi + "_show_overlaps.csv")
-
-    # overlaps.rp()
-    # print(overlaps)
-    #overlaps.to_csv(path=nimi + "_overlaps.csv")  # salvestab leitud vähemalt ühe ülekattega variandid faili
 
     return ülekatteid
 
@@ -115,43 +140,60 @@ cs_suurus = 10  # credible set suurus (kasutatakse filtreerimises), mis peab sel
 
 # geeniekspressioon
 print("\nGeeniekspressioon:")
-ge_failinimede_list = ["Alasoo_2018.macrophage_IFNg+Salmonella_ge.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_ge.purity_filtered.txt", "Alasoo_2018.macrophage_naive_ge.purity_filtered.txt", "Alasoo_2018.macrophage_Salmonella_ge.purity_filtered.txt", "BLUEPRINT_PE.T-cell_ge.purity_filtered.txt", "BLUEPRINT_SE.monocyte_ge.purity_filtered.txt", "BLUEPRINT_SE.neutrophil_ge.purity_filtered.txt", "BrainSeq.brain_ge.purity_filtered.txt", "FUSION.adipose_naive_ge.purity_filtered.txt", "FUSION.muscle_naive_ge.purity_filtered.txt", "GENCORD.fibroblast_ge.purity_filtered.txt", "GENCORD.LCL_ge.purity_filtered.txt", "GENCORD.T-cell_ge.purity_filtered.txt", "GEUVADIS.LCL_ge.purity_filtered.txt", "GTEx.adipose_subcutaneous_ge.purity_filtered.txt", "GTEx.adipose_visceral_ge.purity_filtered.txt", "GTEx.adrenal_gland_ge.purity_filtered.txt", "GTEx.artery_aorta_ge.purity_filtered.txt", "GTEx.artery_coronary_ge.purity_filtered.txt", "GTEx.artery_tibial_ge.purity_filtered.txt", "GTEx.blood_ge.purity_filtered.txt", "GTEx.brain_amygdala_ge.purity_filtered.txt", "GTEx.brain_anterior_cingulate_cortex_ge.purity_filtered.txt", "GTEx.brain_caudate_ge.purity_filtered.txt", "GTEx.brain_cerebellar_hemisphere_ge.purity_filtered.txt", "GTEx.brain_cerebellum_ge.purity_filtered.txt", "GTEx.brain_cortex_ge.purity_filtered.txt", "GTEx.brain_frontal_cortex_ge.purity_filtered.txt", "GTEx.brain_hippocampus_ge.purity_filtered.txt", "GTEx.brain_hypothalamus_ge.purity_filtered.txt", "GTEx.brain_nucleus_accumbens_ge.purity_filtered.txt", "GTEx.brain_putamen_ge.purity_filtered.txt", "GTEx.brain_spinal_cord_ge.purity_filtered.txt", "GTEx.brain_substantia_nigra_ge.purity_filtered.txt", "GTEx.breast_ge.purity_filtered.txt", "GTEx.colon_sigmoid_ge.purity_filtered.txt", "GTEx.colon_transverse_ge.purity_filtered.txt", "GTEx.esophagus_gej_ge.purity_filtered.txt", "GTEx.esophagus_mucosa_ge.purity_filtered.txt", "GTEx.esophagus_muscularis_ge.purity_filtered.txt", "GTEx.fibroblast_ge.purity_filtered.txt", "GTEx.heart_atrial_appendage_ge.purity_filtered.txt", "GTEx.heart_left_ventricle_ge.purity_filtered.txt", "GTEx.LCL_ge.purity_filtered.txt", "GTEx.liver_ge.purity_filtered.txt", "GTEx.lung_ge.purity_filtered.txt", "GTEx.minor_salivary_gland_ge.purity_filtered.txt", "GTEx.muscle_ge.purity_filtered.txt", "GTEx.nerve_tibial_ge.purity_filtered.txt", "GTEx.ovary_ge.purity_filtered.txt", "GTEx.pancreas_ge.purity_filtered.txt", "GTEx.pituitary_ge.purity_filtered.txt", "GTEx.prostate_ge.purity_filtered.txt", "GTEx.skin_not_sun_exposed_ge.purity_filtered.txt", "GTEx.skin_sun_exposed_ge.purity_filtered.txt", "GTEx.small_intestine_ge.purity_filtered.txt", "GTEx.spleen_ge.purity_filtered.txt", "GTEx.stomach_ge.purity_filtered.txt", "GTEx.testis_ge.purity_filtered.txt", "GTEx.thyroid_ge.purity_filtered.txt", "GTEx.uterus_ge.purity_filtered.txt", "GTEx.vagina_ge.purity_filtered.txt", "HipSci.iPSC_ge.purity_filtered.txt", "Lepik_2017.blood_ge.purity_filtered.txt", "Nedelec_2016.macrophage_Listeria_ge.purity_filtered.txt", "Nedelec_2016.macrophage_naive_ge.purity_filtered.txt", "Nedelec_2016.macrophage_Salmonella_ge.purity_filtered.txt", "Quach_2016.monocyte_IAV_ge.purity_filtered.txt", "Quach_2016.monocyte_LPS_ge.purity_filtered.txt", "Quach_2016.monocyte_naive_ge.purity_filtered.txt", "Quach_2016.monocyte_Pam3CSK4_ge.purity_filtered.txt", "Quach_2016.monocyte_R848_ge.purity_filtered.txt", "ROSMAP.brain_naive_ge.purity_filtered.txt", "Schmiedel_2018.B-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_anti-CD3-CD28_ge.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_anti-CD3-CD28_ge.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.monocyte_CD16_naive_ge.purity_filtered.txt", "Schmiedel_2018.monocyte_naive_ge.purity_filtered.txt", "Schmiedel_2018.NK-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.Tfh_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th1-17_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th17_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th1_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th2_memory_ge.purity_filtered.txt", "Schmiedel_2018.Treg_memory_ge.purity_filtered.txt", "Schmiedel_2018.Treg_naive_ge.purity_filtered.txt", "Schwartzentruber_2018.sensory_neuron_ge.purity_filtered.txt", "TwinsUK.blood_ge.purity_filtered.txt", "TwinsUK.fat_ge.purity_filtered.txt", "TwinsUK.LCL_ge.purity_filtered.txt", "TwinsUK.skin_ge.purity_filtered.txt", "van_de_Bunt_2015.pancreatic_islet_ge.purity_filtered.txt"]
-#ge_failinimede_list = ["HipSci.iPSC_ge.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_ge.purity_filtered.txt"]
-ge_count_all = defaultdict(int)
+#ge_failinimede_list = ["Alasoo_2018.macrophage_IFNg+Salmonella_ge.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_ge.purity_filtered.txt", "Alasoo_2018.macrophage_naive_ge.purity_filtered.txt", "Alasoo_2018.macrophage_Salmonella_ge.purity_filtered.txt", "BLUEPRINT_PE.T-cell_ge.purity_filtered.txt", "BLUEPRINT_SE.monocyte_ge.purity_filtered.txt", "BLUEPRINT_SE.neutrophil_ge.purity_filtered.txt"] #, "BrainSeq.brain_ge.purity_filtered.txt", "FUSION.adipose_naive_ge.purity_filtered.txt", "FUSION.muscle_naive_ge.purity_filtered.txt", "GENCORD.fibroblast_ge.purity_filtered.txt", "GENCORD.LCL_ge.purity_filtered.txt", "GENCORD.T-cell_ge.purity_filtered.txt", "GEUVADIS.LCL_ge.purity_filtered.txt"] #, "GTEx.adipose_subcutaneous_ge.purity_filtered.txt", "GTEx.adipose_visceral_ge.purity_filtered.txt", "GTEx.adrenal_gland_ge.purity_filtered.txt", "GTEx.artery_aorta_ge.purity_filtered.txt", "GTEx.artery_coronary_ge.purity_filtered.txt", "GTEx.artery_tibial_ge.purity_filtered.txt", "GTEx.blood_ge.purity_filtered.txt", "GTEx.brain_amygdala_ge.purity_filtered.txt", "GTEx.brain_anterior_cingulate_cortex_ge.purity_filtered.txt", "GTEx.brain_caudate_ge.purity_filtered.txt", "GTEx.brain_cerebellar_hemisphere_ge.purity_filtered.txt", "GTEx.brain_cerebellum_ge.purity_filtered.txt", "GTEx.brain_cortex_ge.purity_filtered.txt", "GTEx.brain_frontal_cortex_ge.purity_filtered.txt", "GTEx.brain_hippocampus_ge.purity_filtered.txt", "GTEx.brain_hypothalamus_ge.purity_filtered.txt", "GTEx.brain_nucleus_accumbens_ge.purity_filtered.txt", "GTEx.brain_putamen_ge.purity_filtered.txt", "GTEx.brain_spinal_cord_ge.purity_filtered.txt", "GTEx.brain_substantia_nigra_ge.purity_filtered.txt", "GTEx.breast_ge.purity_filtered.txt"] #, "GTEx.colon_sigmoid_ge.purity_filtered.txt", "GTEx.colon_transverse_ge.purity_filtered.txt", "GTEx.esophagus_gej_ge.purity_filtered.txt", "GTEx.esophagus_mucosa_ge.purity_filtered.txt", "GTEx.esophagus_muscularis_ge.purity_filtered.txt", "GTEx.fibroblast_ge.purity_filtered.txt", "GTEx.heart_atrial_appendage_ge.purity_filtered.txt", "GTEx.heart_left_ventricle_ge.purity_filtered.txt", "GTEx.LCL_ge.purity_filtered.txt", "GTEx.liver_ge.purity_filtered.txt", "GTEx.lung_ge.purity_filtered.txt", "GTEx.minor_salivary_gland_ge.purity_filtered.txt", "GTEx.muscle_ge.purity_filtered.txt", "GTEx.nerve_tibial_ge.purity_filtered.txt", "GTEx.ovary_ge.purity_filtered.txt", "GTEx.pancreas_ge.purity_filtered.txt", "GTEx.pituitary_ge.purity_filtered.txt", "GTEx.prostate_ge.purity_filtered.txt", "GTEx.skin_not_sun_exposed_ge.purity_filtered.txt", "GTEx.skin_sun_exposed_ge.purity_filtered.txt", "GTEx.small_intestine_ge.purity_filtered.txt", "GTEx.spleen_ge.purity_filtered.txt", "GTEx.stomach_ge.purity_filtered.txt", "GTEx.testis_ge.purity_filtered.txt", "GTEx.thyroid_ge.purity_filtered.txt", "GTEx.uterus_ge.purity_filtered.txt", "GTEx.vagina_ge.purity_filtered.txt", "HipSci.iPSC_ge.purity_filtered.txt", "Lepik_2017.blood_ge.purity_filtered.txt", "Nedelec_2016.macrophage_Listeria_ge.purity_filtered.txt", "Nedelec_2016.macrophage_naive_ge.purity_filtered.txt", "Nedelec_2016.macrophage_Salmonella_ge.purity_filtered.txt", "Quach_2016.monocyte_IAV_ge.purity_filtered.txt", "Quach_2016.monocyte_LPS_ge.purity_filtered.txt", "Quach_2016.monocyte_naive_ge.purity_filtered.txt", "Quach_2016.monocyte_Pam3CSK4_ge.purity_filtered.txt", "Quach_2016.monocyte_R848_ge.purity_filtered.txt", "ROSMAP.brain_naive_ge.purity_filtered.txt"] #, "Schmiedel_2018.B-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_anti-CD3-CD28_ge.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_anti-CD3-CD28_ge.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.monocyte_CD16_naive_ge.purity_filtered.txt", "Schmiedel_2018.monocyte_naive_ge.purity_filtered.txt", "Schmiedel_2018.NK-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.Tfh_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th1-17_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th17_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th1_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th2_memory_ge.purity_filtered.txt", "Schmiedel_2018.Treg_memory_ge.purity_filtered.txt", "Schmiedel_2018.Treg_naive_ge.purity_filtered.txt", "Schwartzentruber_2018.sensory_neuron_ge.purity_filtered.txt"] #, "TwinsUK.blood_ge.purity_filtered.txt", "TwinsUK.fat_ge.purity_filtered.txt", "TwinsUK.LCL_ge.purity_filtered.txt", "TwinsUK.skin_ge.purity_filtered.txt", "van_de_Bunt_2015.pancreatic_islet_ge.purity_filtered.txt"]
+ge_failinimede_list = ["HipSci.iPSC_ge.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_ge.purity_filtered.txt"]
+#ge_failinimede_list = ["0ge.txt"]
 ge_tabelite_pikkus = 0
+ge_count_all = defaultdict(int)
 
-for fail in ge_failinimede_list:
+# seda peab vaid 1 kord jooksutama
+if not path.exists(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "ge_1.csv"):
+    for fail in ge_failinimede_list: #algtöötleme kõik andmed läbi ning salvestame failidesse
+        algtöötlus(fail)
 
-    ge_tabel = algtöötlus(fail)
+#käime faili(kromosoomi)põhiselt kõik andmed läbi
+for i in range(22):
+    ge_tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "ge_" + str(i + 1) + ".csv")  # loeb tabeli sisse
     ge_tabelite_pikkus += len(ge_tabel)
-    ge_cs_list = cs_filtreerimine(ge_tabel, cs_suurus, False)
-    ge_count = ülekatete_leidmine(ge_tabel, ge_cs_list, 'ge')
+    ge_cs_list, tabel_cs = cs_filtreerimine(ge_tabel, cs_suurus, False)
+    ge_count = ülekatete_leidmine(ge_tabel, ge_cs_list, 'ge', tabel_cs)
+
     for count in ge_count:
         ge_count_all[count] += ge_count[count]
+
 
 print("Geeniekspressiooniga leitud ülekatted:", ge_count_all, ", algne tabeli suurus:", ge_tabelite_pikkus, ", leitud ülekatete protsent kogu andmetest:", (round((sum(ge_count_all.values()) / ge_tabelite_pikkus)*100, 5)), "%")
 
 
 # RNA splaissimine (contained
 print("\nRNA splaissimine:")
-txrev_failinimede_list = ["Alasoo_2018.macrophage_IFNg+Salmonella_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_naive_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_Salmonella_txrev.purity_filtered.txt", "BLUEPRINT_PE.T-cell_txrev.purity_filtered.txt", "BLUEPRINT_SE.monocyte_txrev.purity_filtered.txt", "BLUEPRINT_SE.neutrophil_txrev.purity_filtered.txt", "BrainSeq.brain_txrev.purity_filtered.txt", "FUSION.adipose_naive_txrev.purity_filtered.txt", "FUSION.muscle_naive_txrev.purity_filtered.txt", "GENCORD.fibroblast_txrev.purity_filtered.txt", "GENCORD.LCL_txrev.purity_filtered.txt", "GENCORD.T-cell_txrev.purity_filtered.txt", "GEUVADIS.LCL_txrev.purity_filtered.txt", "GTEx.adipose_subcutaneous_txrev.purity_filtered.txt", "GTEx.adipose_visceral_txrev.purity_filtered.txt", "GTEx.adrenal_gland_txrev.purity_filtered.txt", "GTEx.artery_aorta_txrev.purity_filtered.txt", "GTEx.artery_coronary_txrev.purity_filtered.txt", "GTEx.artery_tibial_txrev.purity_filtered.txt", "GTEx.blood_txrev.purity_filtered.txt", "GTEx.brain_amygdala_txrev.purity_filtered.txt", "GTEx.brain_anterior_cingulate_cortex_txrev.purity_filtered.txt", "GTEx.brain_caudate_txrev.purity_filtered.txt", "GTEx.brain_cerebellar_hemisphere_txrev.purity_filtered.txt", "GTEx.brain_cerebellum_txrev.purity_filtered.txt", "GTEx.brain_cortex_txrev.purity_filtered.txt", "GTEx.brain_frontal_cortex_txrev.purity_filtered.txt", "GTEx.brain_hippocampus_txrev.purity_filtered.txt", "GTEx.brain_hypothalamus_txrev.purity_filtered.txt", "GTEx.brain_nucleus_accumbens_txrev.purity_filtered.txt", "GTEx.brain_putamen_txrev.purity_filtered.txt", "GTEx.brain_spinal_cord_txrev.purity_filtered.txt", "GTEx.brain_substantia_nigra_txrev.purity_filtered.txt", "GTEx.breast_txrev.purity_filtered.txt", "GTEx.colon_sigmoid_txrev.purity_filtered.txt", "GTEx.colon_transverse_txrev.purity_filtered.txt", "GTEx.esophagus_gej_txrev.purity_filtered.txt", "GTEx.esophagus_mucosa_txrev.purity_filtered.txt", "GTEx.esophagus_muscularis_txrev.purity_filtered.txt", "GTEx.fibroblast_txrev.purity_filtered.txt", "GTEx.heart_atrial_appendage_txrev.purity_filtered.txt", "GTEx.heart_left_ventricle_txrev.purity_filtered.txt", "GTEx.LCL_txrev.purity_filtered.txt", "GTEx.liver_txrev.purity_filtered.txt", "GTEx.lung_txrev.purity_filtered.txt", "GTEx.minor_salivary_gland_txrev.purity_filtered.txt", "GTEx.muscle_txrev.purity_filtered.txt", "GTEx.nerve_tibial_txrev.purity_filtered.txt", "GTEx.ovary_txrev.purity_filtered.txt", "GTEx.pancreas_txrev.purity_filtered.txt", "GTEx.pituitary_txrev.purity_filtered.txt", "GTEx.prostate_txrev.purity_filtered.txt", "GTEx.skin_not_sun_exposed_txrev.purity_filtered.txt", "GTEx.skin_sun_exposed_txrev.purity_filtered.txt", "GTEx.small_intestine_txrev.purity_filtered.txt", "GTEx.spleen_txrev.purity_filtered.txt", "GTEx.stomach_txrev.purity_filtered.txt", "GTEx.testis_txrev.purity_filtered.txt", "GTEx.thyroid_txrev.purity_filtered.txt", "GTEx.uterus_txrev.purity_filtered.txt", "GTEx.vagina_txrev.purity_filtered.txt", "HipSci.iPSC_txrev.purity_filtered.txt", "Lepik_2017.blood_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_Listeria_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_naive_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_Salmonella_txrev.purity_filtered.txt", "Quach_2016.monocyte_IAV_txrev.purity_filtered.txt", "Quach_2016.monocyte_LPS_txrev.purity_filtered.txt", "Quach_2016.monocyte_naive_txrev.purity_filtered.txt", "Quach_2016.monocyte_Pam3CSK4_txrev.purity_filtered.txt", "Quach_2016.monocyte_R848_txrev.purity_filtered.txt", "ROSMAP.brain_naive_txrev.purity_filtered.txt", "Schmiedel_2018.B-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_anti-CD3-CD28_txrev.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_anti-CD3-CD28_txrev.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.monocyte_CD16_naive_txrev.purity_filtered.txt", "Schmiedel_2018.monocyte_naive_txrev.purity_filtered.txt", "Schmiedel_2018.NK-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.Tfh_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th1-17_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th17_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th1_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th2_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Treg_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Treg_naive_txrev.purity_filtered.txt", "Schwartzentruber_2018.sensory_neuron_txrev.purity_filtered.txt", "TwinsUK.blood_txrev.purity_filtered.txt", "TwinsUK.fat_txrev.purity_filtered.txt", "TwinsUK.LCL_txrev.purity_filtered.txt", "TwinsUK.skin_txrev.purity_filtered.txt", "van_de_Bunt_2015.pancreatic_islet_txrev.purity_filtered.txt"]
-#txrev_failinimede_list = ["HipSci.iPSC_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_txrev.purity_filtered.txt"]
-txrev_count_all = defaultdict(int)
+#txrev_failinimede_list = ["Alasoo_2018.macrophage_IFNg+Salmonella_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_naive_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_Salmonella_txrev.purity_filtered.txt", "BLUEPRINT_PE.T-cell_txrev.purity_filtered.txt", "BLUEPRINT_SE.monocyte_txrev.purity_filtered.txt", "BLUEPRINT_SE.neutrophil_txrev.purity_filtered.txt"] #, "BrainSeq.brain_txrev.purity_filtered.txt", "FUSION.adipose_naive_txrev.purity_filtered.txt", "FUSION.muscle_naive_txrev.purity_filtered.txt", "GENCORD.fibroblast_txrev.purity_filtered.txt", "GENCORD.LCL_txrev.purity_filtered.txt", "GENCORD.T-cell_txrev.purity_filtered.txt", "GEUVADIS.LCL_txrev.purity_filtered.txt"] #, "GTEx.adipose_subcutaneous_txrev.purity_filtered.txt", "GTEx.adipose_visceral_txrev.purity_filtered.txt", "GTEx.adrenal_gland_txrev.purity_filtered.txt", "GTEx.artery_aorta_txrev.purity_filtered.txt", "GTEx.artery_coronary_txrev.purity_filtered.txt", "GTEx.artery_tibial_txrev.purity_filtered.txt", "GTEx.blood_txrev.purity_filtered.txt", "GTEx.brain_amygdala_txrev.purity_filtered.txt", "GTEx.brain_anterior_cingulate_cortex_txrev.purity_filtered.txt", "GTEx.brain_caudate_txrev.purity_filtered.txt", "GTEx.brain_cerebellar_hemisphere_txrev.purity_filtered.txt", "GTEx.brain_cerebellum_txrev.purity_filtered.txt", "GTEx.brain_cortex_txrev.purity_filtered.txt", "GTEx.brain_frontal_cortex_txrev.purity_filtered.txt", "GTEx.brain_hippocampus_txrev.purity_filtered.txt", "GTEx.brain_hypothalamus_txrev.purity_filtered.txt", "GTEx.brain_nucleus_accumbens_txrev.purity_filtered.txt", "GTEx.brain_putamen_txrev.purity_filtered.txt", "GTEx.brain_spinal_cord_txrev.purity_filtered.txt", "GTEx.brain_substantia_nigra_txrev.purity_filtered.txt", "GTEx.breast_txrev.purity_filtered.txt", "GTEx.colon_sigmoid_txrev.purity_filtered.txt", "GTEx.colon_transverse_txrev.purity_filtered.txt", "GTEx.esophagus_gej_txrev.purity_filtered.txt", "GTEx.esophagus_mucosa_txrev.purity_filtered.txt", "GTEx.esophagus_muscularis_txrev.purity_filtered.txt", "GTEx.fibroblast_txrev.purity_filtered.txt", "GTEx.heart_atrial_appendage_txrev.purity_filtered.txt", "GTEx.heart_left_ventricle_txrev.purity_filtered.txt", "GTEx.LCL_txrev.purity_filtered.txt", "GTEx.liver_txrev.purity_filtered.txt", "GTEx.lung_txrev.purity_filtered.txt", "GTEx.minor_salivary_gland_txrev.purity_filtered.txt", "GTEx.muscle_txrev.purity_filtered.txt", "GTEx.nerve_tibial_txrev.purity_filtered.txt", "GTEx.ovary_txrev.purity_filtered.txt", "GTEx.pancreas_txrev.purity_filtered.txt", "GTEx.pituitary_txrev.purity_filtered.txt", "GTEx.prostate_txrev.purity_filtered.txt", "GTEx.skin_not_sun_exposed_txrev.purity_filtered.txt", "GTEx.skin_sun_exposed_txrev.purity_filtered.txt", "GTEx.small_intestine_txrev.purity_filtered.txt", "GTEx.spleen_txrev.purity_filtered.txt", "GTEx.stomach_txrev.purity_filtered.txt", "GTEx.testis_txrev.purity_filtered.txt", "GTEx.thyroid_txrev.purity_filtered.txt", "GTEx.uterus_txrev.purity_filtered.txt", "GTEx.vagina_txrev.purity_filtered.txt", "HipSci.iPSC_txrev.purity_filtered.txt", "Lepik_2017.blood_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_Listeria_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_naive_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_Salmonella_txrev.purity_filtered.txt", "Quach_2016.monocyte_IAV_txrev.purity_filtered.txt", "Quach_2016.monocyte_LPS_txrev.purity_filtered.txt", "Quach_2016.monocyte_naive_txrev.purity_filtered.txt", "Quach_2016.monocyte_Pam3CSK4_txrev.purity_filtered.txt", "Quach_2016.monocyte_R848_txrev.purity_filtered.txt", "ROSMAP.brain_naive_txrev.purity_filtered.txt"] #, "Schmiedel_2018.B-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_anti-CD3-CD28_txrev.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_anti-CD3-CD28_txrev.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.monocyte_CD16_naive_txrev.purity_filtered.txt", "Schmiedel_2018.monocyte_naive_txrev.purity_filtered.txt", "Schmiedel_2018.NK-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.Tfh_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th1-17_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th17_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th1_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th2_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Treg_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Treg_naive_txrev.purity_filtered.txt", "Schwartzentruber_2018.sensory_neuron_txrev.purity_filtered.txt"] #, "TwinsUK.blood_txrev.purity_filtered.txt", "TwinsUK.fat_txrev.purity_filtered.txt", "TwinsUK.LCL_txrev.purity_filtered.txt", "TwinsUK.skin_txrev.purity_filtered.txt", "van_de_Bunt_2015.pancreatic_islet_txrev.purity_filtered.txt"]
+txrev_failinimede_list = ["HipSci.iPSC_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_txrev.purity_filtered.txt"]
+#txrev_failinimede_list = ["0txrev.txt"]
+#txrev_tabel = pd.DataFrame()
 txrev_tabelite_pikkus = 0
+txrev_tabelid = []
+txrev_count_all = defaultdict(int)
 
-for fail in txrev_failinimede_list:
-    txrev_tabel = algtöötlus(fail, "splaissimine")
+# seda peab vaid 1 kord jooksutama
+if not (path.exists(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "txrev_1.csv")):
+    for fail in txrev_failinimede_list: #algtöötleme kõik andmed läbi ning salvestame failidesse
+        algtöötlus(fail, "spalissimine")
+
+#käime faili(kromosoomi)põhiselt kõik andmed läbi
+for i in range(22):
+    txrev_tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "txrev" + "_" + str(i + 1) + ".csv")  # loeb tabeli sisse
     txrev_tabelite_pikkus += len(txrev_tabel)
-    txrev_cs_list = cs_filtreerimine(txrev_tabel, cs_suurus, True)
-    txrev_count = ülekatete_leidmine(txrev_tabel, txrev_cs_list, 'txrev')
+    txrev_cs_list, txrev_tabel_cs = cs_filtreerimine(txrev_tabel, cs_suurus, True)
+    txrev_count = ülekatete_leidmine(txrev_tabel, txrev_cs_list, 'txrev', txrev_tabel_cs)
+
     for count in txrev_count:
         txrev_count_all[count] += txrev_count[count]
 
-print(txrev_count_all)
 
 print("RNA splaissimisega leitud ülekatted:", txrev_count_all, ", algne tabeli suurus:", txrev_tabelite_pikkus, ", leitud ülekatete protsent kogu andmetest:", (round((sum(txrev_count_all.values()) / txrev_tabelite_pikkus)*100, 5)), "%")
 
-
+'''
 #txrevise promootor (upstream)
 #print("\nPromootor:")
 #up_tabel = algtöötlus("HipSci.iPSC_txrev.purity_filtered.txt", "promootor")
@@ -159,7 +201,7 @@ print("RNA splaissimisega leitud ülekatted:", txrev_count_all, ", algne tabeli 
 #up_count = ülekatete_leidmine(up_tabel, up_cs_list, 'txrev_up')
 #print("Promootoriga leitud ülekatted: ", up_count, ", algne tabeli suurus:", len(up_tabel), ", leitud ülekatete protsent kogu andmetest:", (round((sum(up_count.values()) / len(up_tabel))*100, 5)), "%")
 
-
+'''
 ge_count_all, txrev_count_all, ge_labels, txrev_labels = ülekatete_korrastamine(ge_count_all, txrev_count_all, ge_tabelite_pikkus, txrev_tabelite_pikkus)
 
 
