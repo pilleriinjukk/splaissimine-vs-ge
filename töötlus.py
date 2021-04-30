@@ -5,270 +5,349 @@ import matplotlib.pyplot as plt
 import collections
 from collections import defaultdict
 from os import path
-
+import igraph as ig
+from itertools import combinations
 
 pd.set_option('display.max_columns', None)
 desired_width = 1000
 pd.set_option('display.width', desired_width)
 pd.set_option('display.max_colwidth', 100)
 np.set_printoptions(linewidth=desired_width)
+pd.options.mode.chained_assignment = None
 
-'''
-Failist andmete sisselugemine, veergude lisamine ja kustutamine ning kromosoomipõhiselt faili salvestamine.
-Sisend: failinimi
-'''
-def algtöötlus(failinimi, tüüp=""):
-    tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + failinimi, sep="	")  # loeb faili sisse
+
+def algtöötlus(failinimi, salvesta, vaatleme_kromosoome, tüüp):
+    """
+    Failist andmete sisselugemine, veergude lisamine ja kustutamine ning kromosoomipõhiselt failidesse salvestamine.
+    :param failinimi: vaadeldava faili nimetus
+    :param salvesta: faililaiend salvestamiseks
+    :param vaatleme_kromosoome: mitmenda kromosoomini vaadeldakse
+    :param tüüp: vaadeldav protsess (geeniekspressioon, transkriptsioon, splaissimine, promootor, terminaator)
+    """
+    tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\eraldi\\" + failinimi, sep="	")  # loeb faili sisse
     tabel = tabel[['phenotype_id', 'chr', 'cs_id', 'pip', 'cs_size', 'variant_id']]  # mis veerud jätta alles
     tabel = tabel.rename(columns={'chr': 'Chromosome'})
     tabel = pd.concat([tabel, tabel["variant_id"].str.split("_", expand=True)[1].rename("Start")], axis=1)  # uus veerg Start
     tabel["Start"] = pd.to_numeric(tabel["Start"])
-    tabel['End'] = tabel['Start'] + 1  # Pyranges puhul peab mingi vahemik olema, suurema vahemiku puhul loetakse liiga palju ülekatteid
-    tabel = tabel[['phenotype_id', 'cs_id', 'Chromosome', 'Start', 'End', 'pip', 'cs_size']]  # mis veerud jätta alles
+    tabel['End'] = tabel['Start'] + 1  # Pyranges puhul peab mingi algus ja lõppkoht olema
+    tabel = tabel[['phenotype_id', 'variant_id', 'cs_id', 'Chromosome', 'Start', 'End', 'pip', 'cs_size']]  # mis veerud jätta alles
 
-    nimi = "ge"
-    if (tüüp == "spalissimine"):  # vaid txrev puhul
-        tabel = tabel[tabel['phenotype_id'].str.contains("contained")]  # jätab alles vaid andmed splaissimise kohta
-        nimi = "txrev"
+    # txrev faili puhul tuleb splaissimine, promootori ja terminaatori kasutuse andmed üksteisest eraldada
+    if tüüp == 2:
+        tabel = tabel[tabel['phenotype_id'].str.contains("contained")]
 
-    if (tüüp == "promootor"):  # vaid txrev puhul
-        tabel = tabel[tabel['phenotype_id'].str.contains("upstream")]  # jätab alles vaid andmed splaissimise kohta
-        nimi = "txrev_up"
+    elif tüüp == 3:
+        tabel = tabel[tabel['phenotype_id'].str.contains("upstream")]
 
-    tabel["cs_id"] = tabel["cs_id"] + "_" + failinimi.split(".purity_filtered.txt")[0] #lisame cs_id veerule andmebaasi nime juurde
+    elif tüüp == 4:
+        tabel = tabel[tabel['phenotype_id'].str.contains("downstream")]
 
-    #teeme igale kromosoomile oma tabeli
-    tabelid = list(range(22))
+    tabel["cs_id"] = tabel["cs_id"] + "_" + failinimi.split(".purity_filtered.txt")[0]  # lisame cs_id veerule andmebaasi nime juurde
 
-    for i in range(22): #kirjutame iga kromosoomi oma faili
+    # teeme igale kromosoomile oma tabeli
+    tabelid = list(range(vaatleme_kromosoome))
+
+    for i in range(vaatleme_kromosoome):  # kirjutame iga kromosoomi oma faili
         tabelid[i] = (tabel[(tabel['Chromosome'] == 1 + i)])
-        if path.exists(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + nimi + "_" + str(i + 1) + ".csv"):
+        if path.exists(
+                r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\koos\\" + salvesta + str(i + 1) + ".csv"):
             tabelid[i].to_csv(
-                r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + nimi + "_" + str(i + 1) + ".csv", mode='a', index=False, header=False)
-
+                r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\koos\\" + salvesta + str(i + 1) + ".csv",
+                mode='a', index=False, header=False)
         else:
             tabelid[i].to_csv(
-                r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + nimi + "_" + str(i + 1) + ".csv", mode='a', index=False)  # esimene kord salvestame koos veerunimetustega
+                r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\koos\\" + salvesta + str(i + 1) + ".csv",
+                mode='a', index=False)  # esimene kord salvestame koos veerunimetustega
 
 
-'''
-Tabelist sobilike credible set-ide välja valimine
-Sisend: tabel, credible set-i maksimaalne suurus, kas on txrev või ge fail
-Väljund: tabel, kus on iga geeni kohta 1 sobilik cs
-'''
-def cs_filtreerimine(tabel, cs_suurus, onSplaissimine):
-    tabel_cs = tabel.copy()
-    tabel_cs = tabel_cs[tabel_cs['cs_size'] < cs_suurus]  # credible set maksimaalne suurus
+def ülekatete_leidmine(tabel, tüüp, laiend, cs_suurus, kromosoom, transkript_sõnastik):
+    """
+    Tabelist ülekatete leidmine kasutades Pyranges klasterdamist. Koostab ühendatud komponente, kus tippudeks on CSid ja servad on nende vahel siis kui need jagavad omavahel samu variante
+    :param tabel: mis andeid analüüsitakse
+    :param tüüp: vaadeldav protsess (geeniekspressioon, transkriptsioon, splaissimine, promootor, terminaator)
+    :param laiend: mis laiendiga faili sisse lugeda
+    :param cs_suurus: maksimaalne CS suurus
+    :param kromosoom: mitmendat kromosoomi vaatab
+    :param transkript_sõnastik: kui tüüp = transkript, siis sisaldab sõnastikku, et saada kätte geeni_id, muidu tühi
+    :return: sõnastik, mitu geeni iga komponent sisaldab
+    """
+    tabel = tabel[tabel['cs_size'] <= cs_suurus]  # credible set maksimaalne suurus
 
+    if tüüp == 2 or tüüp == 3 or tüüp == 4:
+        tabel['phenotype_id'] = tabel['phenotype_id'].str.split(".", expand=True)  # jätab alles vaid geeni_id
 
-    if onSplaissimine:
-        tabel_cs['phenotype'] = tabel_cs['phenotype_id'].copy()  # teeb uue tulba
-        tabel_cs['phenotype'] = tabel_cs['phenotype'].str.split(".", expand=True)  # jätab alles vaid geeni nime
-        tabel_cs = tabel_cs.sort_values('pip', ascending=False).drop_duplicates(['phenotype'])  # jätab iga geeni kohta vaid ühe CS-i alles, mille pip väärtus on kõige suurem
-        tabel_cs.drop(['phenotype'], axis=1)
+    if tüüp == 5:
+        tabel["gene_id"] = tabel.apply(lambda row: transkript_sõnastik[row.phenotype_id], axis=1)  # saame igale phenotype_id-le vastava geeni_id
     else:
-        tabel_cs = tabel_cs.sort_values('pip', ascending=False).drop_duplicates(
-            ['phenotype_id'])  # jätab iga geeni kohta vaid ühe CS-i alles, mille pip väärtus on kõige suurem
+        tabel["gene_id"] = tabel.phenotype_id  # muudel juhtudel on geeni_id teada
+    tabel.drop(["phenotype_id"], axis=1)
 
-    return tabel_cs
-
-
-'''
-Tabelist ülekatete leidmine kasutades Pyranges count overlaps meetodit
-Sisend: tabel, cs_list, faili nime algus
-Väljund: leitud ülekatted
-'''
-def ülekatete_leidmine(tabel, nimi, tabel_cs):
-    pr_tabel = pr.PyRanges(tabel) # teeb Pyranges tabeli
-    cs_pr_tabel = pr.PyRanges(tabel_cs)
-
-    # loendab kogu tabeli ülekatteid varem välja filtreeritud sobilikest geenidest, salvestab tulemuse NumberOverlaps veergu
-    overlaps = pr_tabel.count_overlaps(cs_pr_tabel)
-
-    overlaps = overlaps[overlaps.NumberOverlaps > 0]  # jätab alles vaid vähemalt ühe ülekatte leidnud cs-i
-
-    #vaatleme vaid üht kromosoomi korraga
-    overlaps = overlaps.df
-    ühend = pd.merge(overlaps, tabel_cs, on=['cs_id', 'Start', 'pip'], how='left', indicator='exist')
-    ühend['exist'] = np.where(ühend.exist == 'both', True, False)
-
-    for i, row in ühend.iterrows():
-        if row.exist:
-            overlaps.iat[i, 7] -= 1
-
-    overlaps = overlaps[overlaps.NumberOverlaps > 0]  # jätab alles vaid vähemalt ühe ülekatte leidnud cs-i
-    ülekatteid = overlaps.NumberOverlaps.value_counts().to_dict()  # salvestab leitud ülekatete arvud sõnastikku
-
-    #show_overlaps = pr_tabel.overlap(cs_pr_tabel)
-    #show_overlaps.to_csv(path=nimi + "_show_overlaps.csv")
-
-    return ülekatteid
+    pr_tabel = pr.PyRanges(tabel)  # teeb PyRanges tabeli
+    cluster = pr_tabel.cluster(by="Start")  # klasterdab asukohapõhiselt
+    cluster_df = cluster.df  # teeb Pandas DataFrame'i
 
 
-'''
-Ülekatete sõnastike sama pikkuseks tegemine ja järjestamine, et oleks lihtsam joonist teha
-Sisend: ge ja txrev ülekatete sõnastikud
-Väljund: korrastatud ge ja txrev sõnastikud
-'''
-def ülekatete_korrastamine(ge_count, txrev_count, ge_tabelite_pikkus, txrev_tabelite_pikkus):
-    suurim_pikkus = max(len(ge_count), len(txrev_count))
+    cluster_df.to_csv(r"tulemused\\" + str(cs_suurus) + "\\" + laiend + "cluster_tulemus.csv", mode='a', index=False)  # kirjutab faili
 
-    for sõnastik in (ge_count, txrev_count):
-        while (len(sõnastik) < suurim_pikkus):
-            sõnastik[len(sõnastik) + 1] = 0
+    # annab iga variandi kohta teada, mitmes CSis esineb
+    # merge = pr_tabel.merge(count=True, by="Start")
+    # merge_df = merge.df
+    # merge_df.to_csv(r"tulemused\\" + str(cs_suurus) + "\\" + laiend + "merge_tulemus.csv", mode='a', index=False) # kirjutab faili
 
-    ge_count = collections.OrderedDict(sorted(ge_count.items()))  # järjestab sõnastiku
-    txrev_count = collections.OrderedDict(sorted(txrev_count.items()))  # järjestab sõnastiku
+    # saab kätte unikaalsed CSide nimetused
+    cs_id = set((tabel.cs_id.values))
 
-    ge_labels = list(ge_count.values())
-    txrev_labels = list(txrev_count.values())
+    g = ig.Graph()  # loob graafi
 
-    for count in ge_count:
-        ge_count[count] = ge_count[count] / ge_tabelite_pikkus
+    # tippude loomine
+    g.add_vertices(len(cs_id))
+    eelmine_klaster = -1
+    i = 0
+    cs_id_indeks = {}  # tippude (CSide) indeksite salvestamine
+    for cs in cs_id:
+        cs_id_indeks[cs] = i
+        i += 1
 
-    for count in txrev_count:
-        txrev_count[count] = txrev_count[count] / txrev_tabelite_pikkus
+    eelmise_indeks = -1
 
-    return ge_count, txrev_count, ge_labels, txrev_labels
+    for i, rida in cluster_df.iterrows():  # vaatab klasterdamisest saadud tabeli reahaaval läbi
+        klaster = rida.Cluster
+        indeks = cs_id_indeks[rida.cs_id]
 
+        try:  # kui selle tipu (CSi) kohta on juba tipp loodud
+            g.vs[indeks]["positions"].append(rida.Start)  # lisab veel ühe variandi asukoha, mis kuulub sellesse CSi
 
-cs_suurus = 10  # credible set suurus (kasutatakse filtreerimises), mis peab sellest jääma väiksemaks
+        except:  # muidu lisatakse tipp ja selle info
+            g.vs[indeks]['cs'] = rida.cs_id
+            g.vs[indeks]["positions"] = [rida.Start]
+            g.vs[indeks]["gene_id"] = rida.gene_id
 
-# geeniekspressioon
-print("\nGeeniekspressioon:")
-ge_failinimede_list = ["Alasoo_2018.macrophage_IFNg+Salmonella_ge.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_ge.purity_filtered.txt", "Alasoo_2018.macrophage_naive_ge.purity_filtered.txt", "Alasoo_2018.macrophage_Salmonella_ge.purity_filtered.txt", "BLUEPRINT_PE.T-cell_ge.purity_filtered.txt", "BLUEPRINT_SE.monocyte_ge.purity_filtered.txt", "BLUEPRINT_SE.neutrophil_ge.purity_filtered.txt", "BrainSeq.brain_ge.purity_filtered.txt", "FUSION.adipose_naive_ge.purity_filtered.txt", "FUSION.muscle_naive_ge.purity_filtered.txt", "GENCORD.fibroblast_ge.purity_filtered.txt", "GENCORD.LCL_ge.purity_filtered.txt", "GENCORD.T-cell_ge.purity_filtered.txt", "GEUVADIS.LCL_ge.purity_filtered.txt", "GTEx.adipose_subcutaneous_ge.purity_filtered.txt", "GTEx.adipose_visceral_ge.purity_filtered.txt", "GTEx.adrenal_gland_ge.purity_filtered.txt", "GTEx.artery_aorta_ge.purity_filtered.txt", "GTEx.artery_coronary_ge.purity_filtered.txt", "GTEx.artery_tibial_ge.purity_filtered.txt", "GTEx.blood_ge.purity_filtered.txt", "GTEx.brain_amygdala_ge.purity_filtered.txt", "GTEx.brain_anterior_cingulate_cortex_ge.purity_filtered.txt", "GTEx.brain_caudate_ge.purity_filtered.txt", "GTEx.brain_cerebellar_hemisphere_ge.purity_filtered.txt", "GTEx.brain_cerebellum_ge.purity_filtered.txt", "GTEx.brain_cortex_ge.purity_filtered.txt", "GTEx.brain_frontal_cortex_ge.purity_filtered.txt", "GTEx.brain_hippocampus_ge.purity_filtered.txt", "GTEx.brain_hypothalamus_ge.purity_filtered.txt", "GTEx.brain_nucleus_accumbens_ge.purity_filtered.txt", "GTEx.brain_putamen_ge.purity_filtered.txt", "GTEx.brain_spinal_cord_ge.purity_filtered.txt", "GTEx.brain_substantia_nigra_ge.purity_filtered.txt", "GTEx.breast_ge.purity_filtered.txt", "GTEx.colon_sigmoid_ge.purity_filtered.txt", "GTEx.colon_transverse_ge.purity_filtered.txt", "GTEx.esophagus_gej_ge.purity_filtered.txt", "GTEx.esophagus_mucosa_ge.purity_filtered.txt", "GTEx.esophagus_muscularis_ge.purity_filtered.txt", "GTEx.fibroblast_ge.purity_filtered.txt", "GTEx.heart_atrial_appendage_ge.purity_filtered.txt", "GTEx.heart_left_ventricle_ge.purity_filtered.txt", "GTEx.LCL_ge.purity_filtered.txt", "GTEx.liver_ge.purity_filtered.txt", "GTEx.lung_ge.purity_filtered.txt", "GTEx.minor_salivary_gland_ge.purity_filtered.txt", "GTEx.muscle_ge.purity_filtered.txt", "GTEx.nerve_tibial_ge.purity_filtered.txt", "GTEx.ovary_ge.purity_filtered.txt", "GTEx.pancreas_ge.purity_filtered.txt", "GTEx.pituitary_ge.purity_filtered.txt", "GTEx.prostate_ge.purity_filtered.txt", "GTEx.skin_not_sun_exposed_ge.purity_filtered.txt", "GTEx.skin_sun_exposed_ge.purity_filtered.txt", "GTEx.small_intestine_ge.purity_filtered.txt", "GTEx.spleen_ge.purity_filtered.txt", "GTEx.stomach_ge.purity_filtered.txt", "GTEx.testis_ge.purity_filtered.txt", "GTEx.thyroid_ge.purity_filtered.txt", "GTEx.uterus_ge.purity_filtered.txt", "GTEx.vagina_ge.purity_filtered.txt", "HipSci.iPSC_ge.purity_filtered.txt", "Lepik_2017.blood_ge.purity_filtered.txt", "Nedelec_2016.macrophage_Listeria_ge.purity_filtered.txt", "Nedelec_2016.macrophage_naive_ge.purity_filtered.txt", "Nedelec_2016.macrophage_Salmonella_ge.purity_filtered.txt", "Quach_2016.monocyte_IAV_ge.purity_filtered.txt", "Quach_2016.monocyte_LPS_ge.purity_filtered.txt", "Quach_2016.monocyte_naive_ge.purity_filtered.txt", "Quach_2016.monocyte_Pam3CSK4_ge.purity_filtered.txt", "Quach_2016.monocyte_R848_ge.purity_filtered.txt", "ROSMAP.brain_naive_ge.purity_filtered.txt", "Schmiedel_2018.B-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_anti-CD3-CD28_ge.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_anti-CD3-CD28_ge.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.monocyte_CD16_naive_ge.purity_filtered.txt", "Schmiedel_2018.monocyte_naive_ge.purity_filtered.txt", "Schmiedel_2018.NK-cell_naive_ge.purity_filtered.txt", "Schmiedel_2018.Tfh_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th1-17_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th17_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th1_memory_ge.purity_filtered.txt", "Schmiedel_2018.Th2_memory_ge.purity_filtered.txt", "Schmiedel_2018.Treg_memory_ge.purity_filtered.txt", "Schmiedel_2018.Treg_naive_ge.purity_filtered.txt", "Schwartzentruber_2018.sensory_neuron_ge.purity_filtered.txt", "TwinsUK.blood_ge.purity_filtered.txt", "TwinsUK.fat_ge.purity_filtered.txt", "TwinsUK.LCL_ge.purity_filtered.txt", "TwinsUK.skin_ge.purity_filtered.txt", "van_de_Bunt_2015.pancreatic_islet_ge.purity_filtered.txt"]
-#ge_failinimede_list = ["HipSci.iPSC_ge.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_ge.purity_filtered.txt"]
-#ge_failinimede_list = ["0ge.txt"]
-ge_tabelite_pikkus = 0
-ge_count_all = defaultdict(int)
+        # servade lisamine
+        # servad lisatakse ühes klastris vaid kahe järjestikuse CSi vahel (ei muuda lõpus tulemust ja muudab arvutuskäigu kiiremaks
+        if klaster == eelmine_klaster:
+            g.add_edge(indeks, eelmise_indeks)
+        else:
+            eelmine_klaster = klaster
+        eelmise_indeks = indeks
 
-# seda peab vaid 1 kord jooksutama
-if not path.exists(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "ge_1.csv"):
-    for fail in ge_failinimede_list: #algtöötleme kõik andmed läbi ning salvestame failidesse
-        algtöötlus(fail)
+        # kui ikkagi vaja saada servad kõikide CSide vahel kätte
+    #     lisa_servad = [] # milliste CSide vahel teha servi
+    #     if (klaster == eelmine_klaster): # kuulub eelnevaga samasse klastrisse
+    #         lisa_servad.append(indeks)
+    #     else:
+    #         # vaadeldav on uus klaster, teeb eelmise klastri servad ära
+    #         for servad in combinations(lisa_servad, 2):
+    #             g.add_edge(servad[0], servad[1])
+    #
+    #         # muudab praeguse klastri informatsiooni
+    #         lisa_servad = [indeks] # vaadeldava CSi indeks salvestatakse listi
+    #         eelmine_klaster = klaster
+    #
+    # # joonistab servad viimase klastri kohta ära
+    # for servad in combinations(lisa_servad, 2):
+    #     g.add_edge(servad[0], servad[1])
 
-#käime faili(kromosoomi)põhiselt kõik andmed läbi
-for i in range(22):
-    ge_tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "ge_" + str(i + 1) + ".csv")  # loeb tabeli sisse
-    ge_tabelite_pikkus += len(ge_tabel)
-    ge_cs_tabel = cs_filtreerimine(ge_tabel, cs_suurus, False)
-    ge_count = ülekatete_leidmine(ge_tabel, 'ge', ge_cs_tabel)
+    komponendid = g.clusters()  # leiab ühendatud komponendid (sidusad alamgraafid)
+    komponentide_geenid = []  # millised geenid kuuluvad samasse ühendatud komponenti
 
-    for count in ge_count:
-        ge_count_all[count] += ge_count[count]
+    # leiab, mis geenid kuuluvad samadesse ühendatud komponentidesse
+    for komponent in komponendid:
+        geenid = set()
+        # leiab kõik komponendi geenid
+        for tipp in komponent:
+            geenid.add(g.vs[tipp]["gene_id"])
 
+        komponentide_geenid.append(geenid)  # mis geenid kuuluvad samasse komponenti
 
-print("Geeniekspressiooniga leitud ülekatted:", ge_count_all, ", algne tabeli suurus:", ge_tabelite_pikkus, ", leitud ülekatete protsent kogu andmetest:", (round((sum(ge_count_all.values()) / ge_tabelite_pikkus)*100, 5)), "%")
+    # salvestab leitud ülekatted
+    ülekatted = defaultdict(int)
+    for komponent in komponentide_geenid:
+        ülekatted[len(komponent)] += 1
 
+    # andmete faili salvestamine
+    with open(file=r"tulemused\\" + str(cs_suurus) + "\\" + laiend + "komponentidesse_kuuluvad_geenid.txt",
+              mode='a') as f:
+        f.write(str(kromosoom) + ": " + str(komponentide_geenid) + "\n")
 
-# RNA splaissimine (contained
-print("\nRNA splaissimine:")
-txrev_failinimede_list = ["Alasoo_2018.macrophage_IFNg+Salmonella_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_naive_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_Salmonella_txrev.purity_filtered.txt", "BLUEPRINT_PE.T-cell_txrev.purity_filtered.txt", "BLUEPRINT_SE.monocyte_txrev.purity_filtered.txt", "BLUEPRINT_SE.neutrophil_txrev.purity_filtered.txt", "BrainSeq.brain_txrev.purity_filtered.txt", "FUSION.adipose_naive_txrev.purity_filtered.txt", "FUSION.muscle_naive_txrev.purity_filtered.txt", "GENCORD.fibroblast_txrev.purity_filtered.txt", "GENCORD.LCL_txrev.purity_filtered.txt", "GENCORD.T-cell_txrev.purity_filtered.txt", "GEUVADIS.LCL_txrev.purity_filtered.txt", "GTEx.adipose_subcutaneous_txrev.purity_filtered.txt", "GTEx.adipose_visceral_txrev.purity_filtered.txt", "GTEx.adrenal_gland_txrev.purity_filtered.txt", "GTEx.artery_aorta_txrev.purity_filtered.txt", "GTEx.artery_coronary_txrev.purity_filtered.txt", "GTEx.artery_tibial_txrev.purity_filtered.txt", "GTEx.blood_txrev.purity_filtered.txt", "GTEx.brain_amygdala_txrev.purity_filtered.txt", "GTEx.brain_anterior_cingulate_cortex_txrev.purity_filtered.txt", "GTEx.brain_caudate_txrev.purity_filtered.txt", "GTEx.brain_cerebellar_hemisphere_txrev.purity_filtered.txt", "GTEx.brain_cerebellum_txrev.purity_filtered.txt", "GTEx.brain_cortex_txrev.purity_filtered.txt", "GTEx.brain_frontal_cortex_txrev.purity_filtered.txt", "GTEx.brain_hippocampus_txrev.purity_filtered.txt", "GTEx.brain_hypothalamus_txrev.purity_filtered.txt", "GTEx.brain_nucleus_accumbens_txrev.purity_filtered.txt", "GTEx.brain_putamen_txrev.purity_filtered.txt", "GTEx.brain_spinal_cord_txrev.purity_filtered.txt", "GTEx.brain_substantia_nigra_txrev.purity_filtered.txt", "GTEx.breast_txrev.purity_filtered.txt", "GTEx.colon_sigmoid_txrev.purity_filtered.txt", "GTEx.colon_transverse_txrev.purity_filtered.txt", "GTEx.esophagus_gej_txrev.purity_filtered.txt", "GTEx.esophagus_mucosa_txrev.purity_filtered.txt", "GTEx.esophagus_muscularis_txrev.purity_filtered.txt", "GTEx.fibroblast_txrev.purity_filtered.txt", "GTEx.heart_atrial_appendage_txrev.purity_filtered.txt", "GTEx.heart_left_ventricle_txrev.purity_filtered.txt", "GTEx.LCL_txrev.purity_filtered.txt", "GTEx.liver_txrev.purity_filtered.txt", "GTEx.lung_txrev.purity_filtered.txt", "GTEx.minor_salivary_gland_txrev.purity_filtered.txt", "GTEx.muscle_txrev.purity_filtered.txt", "GTEx.nerve_tibial_txrev.purity_filtered.txt", "GTEx.ovary_txrev.purity_filtered.txt", "GTEx.pancreas_txrev.purity_filtered.txt", "GTEx.pituitary_txrev.purity_filtered.txt", "GTEx.prostate_txrev.purity_filtered.txt", "GTEx.skin_not_sun_exposed_txrev.purity_filtered.txt", "GTEx.skin_sun_exposed_txrev.purity_filtered.txt", "GTEx.small_intestine_txrev.purity_filtered.txt", "GTEx.spleen_txrev.purity_filtered.txt", "GTEx.stomach_txrev.purity_filtered.txt", "GTEx.testis_txrev.purity_filtered.txt", "GTEx.thyroid_txrev.purity_filtered.txt", "GTEx.uterus_txrev.purity_filtered.txt", "GTEx.vagina_txrev.purity_filtered.txt", "HipSci.iPSC_txrev.purity_filtered.txt", "Lepik_2017.blood_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_Listeria_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_naive_txrev.purity_filtered.txt", "Nedelec_2016.macrophage_Salmonella_txrev.purity_filtered.txt", "Quach_2016.monocyte_IAV_txrev.purity_filtered.txt", "Quach_2016.monocyte_LPS_txrev.purity_filtered.txt", "Quach_2016.monocyte_naive_txrev.purity_filtered.txt", "Quach_2016.monocyte_Pam3CSK4_txrev.purity_filtered.txt", "Quach_2016.monocyte_R848_txrev.purity_filtered.txt", "ROSMAP.brain_naive_txrev.purity_filtered.txt", "Schmiedel_2018.B-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_anti-CD3-CD28_txrev.purity_filtered.txt", "Schmiedel_2018.CD4_T-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_anti-CD3-CD28_txrev.purity_filtered.txt", "Schmiedel_2018.CD8_T-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.monocyte_CD16_naive_txrev.purity_filtered.txt", "Schmiedel_2018.monocyte_naive_txrev.purity_filtered.txt", "Schmiedel_2018.NK-cell_naive_txrev.purity_filtered.txt", "Schmiedel_2018.Tfh_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th1-17_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th17_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th1_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Th2_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Treg_memory_txrev.purity_filtered.txt", "Schmiedel_2018.Treg_naive_txrev.purity_filtered.txt", "Schwartzentruber_2018.sensory_neuron_txrev.purity_filtered.txt", "TwinsUK.blood_txrev.purity_filtered.txt", "TwinsUK.fat_txrev.purity_filtered.txt", "TwinsUK.LCL_txrev.purity_filtered.txt", "TwinsUK.skin_txrev.purity_filtered.txt", "van_de_Bunt_2015.pancreatic_islet_txrev.purity_filtered.txt"]
-#txrev_failinimede_list = ["HipSci.iPSC_txrev.purity_filtered.txt", "Alasoo_2018.macrophage_IFNg_txrev.purity_filtered.txt"]
-#txrev_failinimede_list = ["0txrev.txt"]
-txrev_tabel = pd.DataFrame()
-txrev_tabelite_pikkus = 0
-txrev_tabelid = []
-txrev_count_all = defaultdict(int)
-
-# seda peab vaid 1 kord jooksutama
-if not (path.exists(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "txrev_1.csv")):
-    for fail in txrev_failinimede_list: #algtöötleme kõik andmed läbi ning salvestame failidesse
-        algtöötlus(fail, "spalissimine")
-
-#käime faili(kromosoomi)põhiselt kõik andmed läbi
-for i in range(22):
-    txrev_tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\\" + "txrev" + "_" + str(i + 1) + ".csv")  # loeb tabeli sisse
-    txrev_tabelite_pikkus += len(txrev_tabel)
-    txrev_cs_tabel = cs_filtreerimine(txrev_tabel, cs_suurus, True)
-    txrev_count = ülekatete_leidmine(txrev_tabel, 'txrev', txrev_cs_tabel)
-
-    for count in txrev_count:
-        txrev_count_all[count] += txrev_count[count]
-
-
-print("RNA splaissimisega leitud ülekatted:", txrev_count_all, ", algne tabeli suurus:", txrev_tabelite_pikkus, ", leitud ülekatete protsent kogu andmetest:", (round((sum(txrev_count_all.values()) / txrev_tabelite_pikkus)*100, 5)), "%")
-
-'''
-#txrevise promootor (upstream)
-#print("\nPromootor:")
-#up_tabel = algtöötlus("HipSci.iPSC_txrev.purity_filtered.txt", "promootor")
-#up_cs_list = cs_filtreerimine(up_tabel, cs_suurus, True)
-#up_count = ülekatete_leidmine(up_tabel, up_cs_list, 'txrev_up')
-#print("Promootoriga leitud ülekatted: ", up_count, ", algne tabeli suurus:", len(up_tabel), ", leitud ülekatete protsent kogu andmetest:", (round((sum(up_count.values()) / len(up_tabel))*100, 5)), "%")
-
-'''
-ge_count_all, txrev_count_all, ge_labels, txrev_labels = ülekatete_korrastamine(ge_count_all, txrev_count_all, ge_tabelite_pikkus, txrev_tabelite_pikkus)
+    return ülekatted
 
 
-def joonista(ge, txrev, ge_labels, txrev_labels):
-    fig, (ax0, ax1) = plt.subplots(nrows=1, ncols=2, figsize=(16, 8))
+def main(tüüp, failinimede_list):
+    """
+    Leiab, kui palju on vaadeldava protsessi puhul üht või mitut geeni sisaldavaid ühendatud komponente.
+    Prindib huvipakkuva informatsiooni välja.
+    :param tüüp: vaadeldav protsess (geeniekspressioon, transkriptsioon, splaissimine, promootor, terminaator)
+    :param failinimede_list: mis failid vaadeldakse läbi
+    :return: kui palju oli vaid üht geeni sisaldavad ühendatud komponente ja kui palju oli rohkem kui üht geeni sisaldavaid komponente
+    """
+    vaatleme_kromosoome = 22
+    ülekatteid_kokku = defaultdict(int)  # kui suuri ülekatteid on leitud
 
-    # set width of bar
-    barWidth = 0.45
+    if tüüp == 1:  # geeniekspressioon
+        laiend = "ge"
+        salvesta = "ge_"
+        nimetus = "Geeniekspressiooniga"
+    elif tüüp == 2:  # RNA splaissimine
+        laiend = "txrev"
+        salvesta = "txrev_"
+        nimetus = "RNA splaissimisega"
+    elif tüüp == 3:  # promootor
+        laiend = "txrev"
+        salvesta = "upstream_"
+        nimetus = "Promootori kasutusega "
+    elif tüüp == 4:  # terminaator
+        laiend = "txrev"
+        salvesta = "downstream_"
+        nimetus = "Terminaatori kasutusega"
+    elif tüüp == 5:  # transkriptsioon
+        laiend = "tx"
+        salvesta = "tx_"
+        nimetus = "Transkriptidega"
+    else:
+        laiend, salvesta, nimetus = "muu"
 
-    # set height of bar
+    # seda peab vaid 1 kord jooksutama, et salvestada kogu informatsioon kromosoomipõhiselt
+    if not path.exists(
+            r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\koos\\" + salvesta + "1.csv"):  # pole läbi jooksutatud
+        for fail in failinimede_list:  # algtöötleme kõik andmed läbi ning salvestame failidesse
+            algtöötlus(fail + laiend + ".purity_filtered.txt", salvesta, vaatleme_kromosoome, tüüp)
+
+    if tüüp == 5:
+        # vajalik transcriptide fenotüüpide teisendamiseks geenideks
+        metadata = pd.read_csv(
+            r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\eraldi\transcript_usage_Ensembl_96_phenotype_metadata.tsv",
+            sep='\t', header=0)  # loeb metadata sisse
+        metadata = metadata[["phenotype_id", "gene_id"]]
+        transkript_sõnastik = metadata.set_index("phenotype_id").to_dict()["gene_id"]
+    else:
+        transkript_sõnastik = {}
+
+    # analüüsib kromosoomipõhiselt kõik läbi
+    for i in range(vaatleme_kromosoome):
+        tabel = pd.read_csv(r"C:\Users\pr\Documents\kool\6 semester 2020-21\Baka\andmed\koos\\" + salvesta + str(i + 1) + ".csv")  # loeb tabeli sisse
+        ülekatteid = ülekatete_leidmine(tabel, tüüp, salvesta, cs_suurus, i + 1, transkript_sõnastik)  # leiab ülekatted
+
+        for ülekate in ülekatteid.keys():
+            ülekatteid_kokku[ülekate] += ülekatteid[ülekate]  # salvestab, palju on ülekatteid kokku leitud
+
+    mitu_geeni = 0  # palju on rohkem kui üht geeni sisaldavaid komponente
+    for ülekate in ülekatteid_kokku.keys():
+        if ülekate > 1:
+            mitu_geeni += ülekatteid_kokku[ülekate]
+
+    ülekatteid_kokku = dict(collections.OrderedDict(sorted(ülekatteid_kokku.items())))  # järjestab sõnastiku
+
+    komponente_kokku = 0  # komponentide arv kokku
+    paarid = [(k, ülekatteid_kokku[k]) for k in ülekatteid_kokku]  # paarid: geenide arv komponendis ja kui palju selliseid komponente leidus
+    for paar in paarid:  # leiab komponentide arvu
+        komponente_kokku += paar[0] * paar[1]
+
+    print(nimetus + " leitud ülekatted:", dict(ülekatteid_kokku))
+    print("Ühes ühendatud komponendis geene: üks -", ülekatteid_kokku[1], " mitu -", mitu_geeni)
+    print("Vaid üht geeni sisaldavate ühendatud komponentide suhe kogu komponentide arvuga: ",
+          (round((ülekatteid_kokku[1] / (ülekatteid_kokku[1] + mitu_geeni)) * 100, 3)), "%")
+    print("Ühendatud komponente kokku ", komponente_kokku)
+    ülekatteid_üldine = {1: ülekatteid_kokku[1], 2: mitu_geeni}
+
+    return ülekatteid_üldine
+
+
+# kõik töös kasutatud andmed
+failinimede_list = ["Alasoo_2018.macrophage_IFNg+Salmonella_", "Alasoo_2018.macrophage_IFNg_",
+                    "Alasoo_2018.macrophage_naive_", 'BLUEPRINT_PE.T-cell_', 'BLUEPRINT_SE.monocyte_',
+                    'BLUEPRINT_SE.neutrophil_', 'BrainSeq.brain_', 'FUSION.adipose_naive_', 'FUSION.muscle_naive_',
+                    'GENCORD.fibroblast_', 'GENCORD.LCL_', 'GENCORD.T-cell_', 'GEUVADIS.LCL_',
+                    'GTEx.adipose_subcutaneous_', 'GTEx.adipose_visceral_', 'GTEx.adrenal_gland_', 'GTEx.artery_aorta_',
+                    'GTEx.artery_coronary_', 'GTEx.artery_tibial_', 'GTEx.blood_', 'GTEx.brain_amygdala_',
+                    'GTEx.brain_anterior_cingulate_cortex_', 'GTEx.brain_caudate_', 'GTEx.brain_cerebellar_hemisphere_',
+                    'GTEx.brain_cerebellum_', 'GTEx.brain_cortex_', 'GTEx.brain_frontal_cortex_',
+                    'GTEx.brain_hippocampus_', 'GTEx.brain_hypothalamus_', 'GTEx.brain_nucleus_accumbens_',
+                    'GTEx.brain_putamen_', 'GTEx.brain_spinal_cord_', 'GTEx.brain_substantia_nigra_', 'GTEx.breast_',
+                    'GTEx.colon_sigmoid_', 'GTEx.colon_transverse_', 'GTEx.esophagus_gej_', 'GTEx.esophagus_mucosa_',
+                    'GTEx.esophagus_muscularis_', 'GTEx.fibroblast_', 'GTEx.heart_atrial_appendage_',
+                    'GTEx.heart_left_ventricle_', 'GTEx.LCL_', 'GTEx.liver_', 'GTEx.lung_',
+                    'GTEx.minor_salivary_gland_', 'GTEx.muscle_', 'GTEx.nerve_tibial_', 'GTEx.ovary_', 'GTEx.pancreas_',
+                    'GTEx.pituitary_', 'GTEx.prostate_', 'GTEx.skin_not_sun_exposed_', 'GTEx.skin_sun_exposed_',
+                    'GTEx.small_intestine_', 'GTEx.spleen_', 'GTEx.stomach_', 'GTEx.testis_', 'GTEx.thyroid_',
+                    'GTEx.uterus_', 'GTEx.vagina_', 'HipSci.iPSC_', 'Lepik_2017.blood_',
+                    'Nedelec_2016.macrophage_Listeria_', 'Nedelec_2016.macrophage_naive_',
+                    'Nedelec_2016.macrophage_Salmonella_', 'Quach_2016.monocyte_IAV_', 'Quach_2016.monocyte_LPS_',
+                    'Quach_2016.monocyte_naive_', 'Quach_2016.monocyte_Pam3CSK4_', 'Quach_2016.monocyte_R848_',
+                    'ROSMAP.brain_naive_', 'Schmiedel_2018.B-cell_naive_', 'Schmiedel_2018.CD4_T-cell_anti-CD3-CD28_',
+                    'Schmiedel_2018.CD4_T-cell_naive_', 'Schmiedel_2018.CD8_T-cell_anti-CD3-CD28_',
+                    'Schmiedel_2018.CD8_T-cell_naive_', 'Schmiedel_2018.monocyte_CD16_naive_',
+                    'Schmiedel_2018.monocyte_naive_', 'Schmiedel_2018.NK-cell_naive_', 'Schmiedel_2018.Tfh_memory_',
+                    'Schmiedel_2018.Th1-17_memory_', 'Schmiedel_2018.Th17_memory_', 'Schmiedel_2018.Th1_memory_',
+                    'Schmiedel_2018.Th2_memory_', 'Schmiedel_2018.Treg_memory_', 'Schmiedel_2018.Treg_naive_',
+                    'Schwartzentruber_2018.sensory_neuron_', 'TwinsUK.blood_', 'TwinsUK.fat_', 'TwinsUK.LCL_',
+                    'TwinsUK.skin_', 'van_de_Bunt_2015.pancreatic_islet_']
+# failinimede_list = ["HipSci.iPSC_", "Alasoo_2018.macrophage_IFNg+Salmonella_"]  # katsetamiseks
+
+
+ülekatted = []
+for cs in range(10, 101, 10):  # mis CSi vahemikus koodi läbi jooksutada
+    cs_suurus = cs
+    print("\n\nCS suurus:", cs_suurus)
+
+    # ge
+    print("\nGeeniekspressioon:")
+    ge_ülekatteid = main(1, failinimede_list)
+
+    # txrevise contained
+    print("\nRNA splaissimine:")
+    txrev_ülekatteid = main(2, failinimede_list)
+
+    # txrevise upstream
+    print("\nPromootor:")
+    upstream_ülekatteid = main(3, failinimede_list)
+
+    # txrevise downstream
+    print("\nTerminaator:")
+    downstream_ülekatteid = main(4, failinimede_list)
+
+    # tx
+    print("\nTranskript:")
+    tx_ülekatteid = main(5, failinimede_list)
+
+
+def joonista(ge, txrev, upstream, downstream, transcript):
+    fig, (ax0) = plt.subplots(figsize=(8, 8))
+
+    # tulba laius
+    bar_width = 0.18
+
+    # tulba kõrgus
     bars1 = list(ge.values())
     bars2 = list(txrev.values())
+    bars3 = list(upstream.values())
+    bars4 = list(downstream.values())
+    bars5 = list(transcript.values())
 
-    # Set position of bar on X axis
+    # tulba asukoht X-teljel
     r1 = np.arange(len(bars1))
-    r2 = [x + barWidth for x in r1]
+    r2 = [x + bar_width for x in r1]
+    r3 = [x + bar_width for x in r2]
+    r4 = [x + bar_width for x in r3]
+    r5 = [x + bar_width for x in r4]
 
-    # Make the plot
-    ax0.bar(r1, bars1, color='c', width=barWidth, edgecolor='white', label='Geeniekspressioon')
-    ax0.bar(r2, bars2, color='coral', width=barWidth, edgecolor='white', label='RNA splaissimine')
+    # tulpade joonistamine
+    ax0.bar(r1, bars1, color='c', width=bar_width, edgecolor='white', label='Geeniekspressioon')
+    ax0.bar(r2, bars2, color='salmon', width=bar_width, edgecolor='white', label='RNA splaissimine')
+    ax0.bar(r3, bars3, color='orchid', width=bar_width, edgecolor='white', label='Promootor')
+    ax0.bar(r4, bars4, color='lightgreen', width=bar_width, edgecolor='white', label='Terminaator')
+    ax0.bar(r5, bars5, color='gold', width=bar_width, edgecolor='white', label='Transkript')
 
-    ax0.set_title('Tulemuste võrdlus, cs <' + str(cs_suurus))
+    ax0.set_title('Geenide arv ühendatud komponendis vastavalt uuritud protsessile, cs <=' + str(cs_suurus))
 
-    # Add xticks on the middle of the group bars
-    ax0.set_xlabel('Ülekatted')
-    ax0.set_ylabel('Geenide arv protsentuaalselt kogu andmestikust')
+    # telgede pealkirjadA
+    ax0.set_xlabel('Geenide arv klikis')
+    ax0.set_ylabel('Klikkide arv')
 
-    ax0.set_xticks([r + (barWidth / 2) for r in range(len(bars1))])
-    ax0.set_xticklabels(list(ge.keys()))
-    i=0
-    labels = ge_labels + txrev_labels
-
-    for p in ax0.patches:
-        ax0.annotate(str(labels[i]), (p.get_x() * 1.005 + barWidth / 6, p.get_height() * 1.005))
-        i += 1
+    # grupeeritud tulpade nimetused
+    ax0.set_xticks([r + (bar_width / 5) for r in range(len(bars1))])
+    ax0.set_xticklabels(["üks", "mitu"])
 
     ax0.legend()
-
-    ge.pop(1, None)
-    txrev.pop(1, None)
-
-    # set height of bar
-    bars1 = list(ge.values())
-    bars2 = list(txrev.values())
-
-    # Set position of bar on X axis
-    r1 = np.arange(len(bars1))
-    r2 = [x + barWidth for x in r1]
-
-    # Make the plot
-    ax1.bar(r1, bars1, color='c', width=barWidth, edgecolor='white', label='Geeniekspressioon')
-    ax1.bar(r2, bars2, color='coral', width=barWidth, edgecolor='white', label='RNA splaissimine')
-
-    ax1.set_title('Tulemuste võrdlus 2+ ülekattega')
-
-    # Add xticks on the middle of the group bars
-    ax1.set_xlabel('Ülekatteid')
-    ax1.set_ylabel('Geenide arv')
-    ax1.set_xticks([r + (barWidth / 2) for r in range(len(bars1))])
-    ax1.set_xticklabels(list(ge.keys()))
-
-    # Annotate every column
-    i = 0
-    labels = ge_labels[1:] + txrev_labels[1:] #ühe ülekattega veerud jätame välja
-    for p in ax1.patches:
-        ax1.annotate(str(labels[i]), (p.get_x() * 1.005 + barWidth / 6, p.get_height() * 1.005))
-        i += 1
-
-    # Create legend & Show graphic
-    ax1.legend()
     plt.show()
 
-
-joonista(ge_count_all, txrev_count_all, ge_labels, txrev_labels)
+joonista(ge_ülekatteid, txrev_ülekatteid, upstream_ülekatteid, downstream_ülekatteid, tx_ülekatteid)
