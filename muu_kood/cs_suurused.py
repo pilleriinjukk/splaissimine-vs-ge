@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import collections
 import matplotlib.pyplot as plt
 import math
 
@@ -77,9 +76,6 @@ def leia_cs_suurused(failinimede_list, loendus_kuni, tüüp):
                 cs_suurused[loendus_kuni + 10] += 1
             else:
                 cs_suurused[ümarda(row.cs_size)] += 1
-
-    cs_suurused = collections.OrderedDict(sorted(cs_suurused.items()))  # järjestab sõnastiku
-    print(cs_suurused)
 
     return cs_suurused
 
